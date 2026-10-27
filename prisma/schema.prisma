@@ -390,6 +390,7 @@ model WalletRotation {
 
 model Organization {
   id                   String                    @id @default(cuid())
+  credentialVerificationKeyTrustPins CredentialVerificationKeyTrustPin[]
   name                 String
   slug                 String                    @unique
   website              String?
@@ -504,6 +505,7 @@ model IdempotencyRecord {
 
 model Issuer {
   id                      String                   @id @default(cuid())
+  credentialVerificationKeyTrustPins CredentialVerificationKeyTrustPin[]
   organizationId          String
   organization            Organization             @relation(fields: [organizationId], references: [id])
   stellarAddress          String                   @unique
@@ -790,6 +792,7 @@ model TrustedSource {
 
 model Proof {
   id                      String                  @id @default(cuid())
+  verificationProvenances VerificationProvenance[]
   userId                  String
   user                    User                    @relation(fields: [userId], references: [id])
   proofType               ProofType
@@ -1024,6 +1027,7 @@ model VerificationEventLog {
 /// Never changes verification cryptographic outcome.
 model VerificationProvenance {
   id          String                          @id @default(cuid())
+  sourceRecords VerificationProvenanceSource[]
   proofId     String
   proof       Proof                           @relation(fields: [proofId], references: [id], onDelete: Cascade)
   /// Versioned decision schema (e.g., "earnproof.verification.provenance.v1")
@@ -2443,6 +2447,8 @@ model ProofExpirationReminderDelivery {
   @@unique([proofId, windowHours])
   @@index([status, scheduledFor])
   @@index([userId, status])
+}
+
 enum TransactionConfirmationStatus {
   SUBMITTED
   PENDING
