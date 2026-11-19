@@ -1,4 +1,5 @@
 import { Module } from "@nestjs/common";
+import { AuthModule } from "../auth/auth.module";
 import { ApiKeysModule } from "../api-keys/api-keys.module";
 import { ApprovalsModule } from "../approvals/approvals.module";
 import { DisclosureModule } from "../common/disclosure/disclosure.module";
@@ -23,13 +24,20 @@ import { ProofExpirationReconcilerService } from "./proof-expiration-reconciler.
 import { ProofSharingCleanupJob } from "./proof-sharing-cleanup.job";
 import { RetentionCleanupService } from "./retention/retention-cleanup.service";
 import { RetentionJob } from "./retention/retention.job";
+import { RevocationPropagationController } from "./revocation-propagation.controller";
+import { RevocationPropagationReconcilerService } from "./revocation-propagation-reconciler.service";
 import { WebhookCertificateExpiryJob } from "./webhook-certificate-expiry.job";
+import { WebhookTlsProbeJob } from "./webhook-tls-probe.job";
 import { DomainEventOutboxWorkerService } from "./domain-event-outbox-worker.service";
 import { BulkAdminService } from "./bulk-admin/bulk-admin.service";
 import { BulkAdminController } from "./bulk-admin/bulk-admin.controller";
+import { MetricsModule } from "../metrics/metrics.module";
+import { MetricsRollupJob } from "./metrics-rollup.job";
+import { ApiKeyExpirationJob } from "./api-key-expiration.job";
 
 @Module({
   imports: [
+    AuthModule,
     ApprovalsModule,
     IssuersModule,
     PaymentsModule,
@@ -37,9 +45,15 @@ import { BulkAdminController } from "./bulk-admin/bulk-admin.controller";
     DisclosureModule,
     WebhooksModule,
     ApiKeysModule,
+    MetricsModule,
   ],
-  controllers: [JobExecutionController, BulkAdminController],
+  controllers: [
+    JobExecutionController,
+    RevocationPropagationController,
+    BulkAdminController,
+  ],
   providers: [
+    ApiKeyExpirationJob,
     ContractAnchoringService,
     AnchoringWorkerService,
     PaymentBackfillWorkerService,
@@ -55,10 +69,13 @@ import { BulkAdminController } from "./bulk-admin/bulk-admin.controller";
     RetentionJob,
     ApprovalExpiryJob,
     WebhookCertificateExpiryJob,
+    WebhookTlsProbeJob,
     JobExecutionService,
     JobExecutionMaintenanceJob,
     AttestationReconcilerService,
+    RevocationPropagationReconcilerService,
     BulkAdminService,
+    MetricsRollupJob,
   ],
   exports: [
     AnchoringWorkerService,
@@ -72,7 +89,9 @@ import { BulkAdminController } from "./bulk-admin/bulk-admin.controller";
     IssuerReconciliationService,
     RetentionCleanupService,
     JobExecutionService,
+    RevocationPropagationReconcilerService,
     BulkAdminService,
+    ApiKeyExpirationJob,
   ],
 })
 export class JobsModule {}

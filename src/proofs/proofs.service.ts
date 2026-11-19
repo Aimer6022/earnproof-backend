@@ -40,6 +40,11 @@ import { CredentialVerificationKeyService } from "../common/crypto/credential-ve
 import { sha256 } from "../common/crypto/hash";
 import { PaymentEncryptionKeyringService } from "../common/crypto/payment-encryption-keyring.service";
 import { ApiErrorCode } from "../common/dto/api-error.dto";
+import {
+  buildPage,
+  cursorOrderBy,
+  cursorWhereFragment,
+} from "../common/pagination/keyset-paginate";
 import { PrismaService } from "../database/prisma.service";
 import { OrganizationQuotaService } from "../quotas/organization-quota.service";
 import { WebhookDeliveryService } from "../webhooks/webhook-delivery.service";
@@ -99,6 +104,8 @@ import {
 import { ListProofsDto } from "./dto/list-proofs.dto";
 import { RevokeProofDto } from "./dto/revoke-proof.dto";
 import { RenewProofDto } from "./dto/renew-proof.dto";
+import { SignedCursorService } from "../common/pagination/signed-cursor.service";
+import { computeFilterIdFromDto } from "../common/pagination/filter-id";
 import {
   evaluateRenewalEligibility,
   evaluateSupersessionCompatibility,
@@ -381,10 +388,12 @@ export class ProofsService {
   private readonly anchoringRequired: boolean;
   private readonly aggregateEarnings: AggregateEarningsCalculator;
   private readonly prisma: PrismaService;
+  private readonly signedCursorService: SignedCursorService;
   private readonly verificationEventService: VerificationEventService;
   private readonly quotas: OrganizationQuotaService;
   private readonly attestationsService: AttestationsService;
   private readonly issuerPolicyCommitmentsService: IssuerPolicyCommitmentsService;
+  private readonly verificationProvenanceService?: VerificationProvenanceService;
   private readonly contractAnchoringService?: ContractAnchoringService;
   private readonly webhookDeliveryService?: WebhookDeliveryService;
   private readonly credentialVerificationKeyService?: CredentialVerificationKeyService;
@@ -392,6 +401,7 @@ export class ProofsService {
 
   constructor(
     prisma: PrismaService,
+    signedCursorService: SignedCursorService,
     configService: ConfigService,
     @Optional() @Inject(VerificationEventService) p3?: any,
     @Optional() @Inject(OrganizationQuotaService) p4?: any,
@@ -401,9 +411,11 @@ export class ProofsService {
     @Optional() @Inject(CredentialVerificationKeyService) p8?: any,
     @Optional() @Inject(ProofVerificationAbuseService) p9?: any,
     @Optional() @Inject(IssuerPolicyCommitmentsService) p10?: any,
+    @Optional() @Inject(VerificationProvenanceService) p11?: any,
   ) {
     this.prisma = prisma;
-    const rest: any[] = [p3, p4, p5, p6, p7, p8, p9, p10].filter((x) => x !== undefined && x !== null);
+    this.signedCursorService = signedCursorService;
+    const rest: any[] = [p3, p4, p5, p6, p7, p8, p9, p10, p11].filter((x) => x !== undefined && x !== null);
     
     let eventService = { recordEvent: async () => {} } as any;
     let quotaService = { consumeForUser: async () => {}, checkQuota: async () => true } as any;
@@ -420,6 +432,8 @@ export class ProofsService {
         attestationService = candidate;
       } else if (typeof candidate.captureOrReuse === "function" || typeof candidate.getCurrentCommitment === "function") {
         issuerPolicyCommitmentsService = candidate;
+      } else if (typeof candidate.recordProvenance === "function") {
+        this.verificationProvenanceService = candidate;
       } else if (
         typeof candidate.anchor === "function" ||
         typeof candidate.enqueueIntent === "function" ||
@@ -959,17 +973,35 @@ export class ProofsService {
       throw new BadRequestException("issuedFrom must be before issuedTo");
     }
 
+    // Compute filter ID from query parameters (binds cursor to specific filters)
+    const filterId = computeFilterIdFromDto(input, [
+      "type",
+      "status",
+      "assetCode",
+      "issuedFrom",
+      "issuedTo",
+    ]);
+
+    // Validate and decode cursor if provided
+    let cursorId: string | undefined;
     if (input.cursor) {
-      const cursor = await this.prisma.proof.findFirst({
-        where: { id: input.cursor, userId },
-        select: { id: true },
+      const verifyResult = this.signedCursorService.verify({
+        token: input.cursor,
+        tenantId: userId,
+        filterId,
       });
-      if (!cursor) {
-        throw new BadRequestException("Invalid proof cursor");
+
+      if (!verifyResult.ok) {
+        throw new BadRequestException(
+          `Invalid pagination cursor: ${verifyResult.reason}. Please restart pagination.`
+        );
       }
+
+      cursorId = verifyResult.data.cursorId;
     }
 
     const limit = input.limit ?? 20;
+    const cursorWhere = cursorWhereFragment(input.cursor, "createdAt");
     const where: Prisma.ProofWhereInput = {
       userId,
       proofType: input.type,
@@ -977,21 +1009,31 @@ export class ProofsService {
       assetCode: input.assetCode,
       createdAt:
         issuedFrom || issuedTo ? { gte: issuedFrom, lte: issuedTo } : undefined,
+      ...(cursorWhere as Prisma.ProofWhereInput),
     };
     const proofs = await this.prisma.proof.findMany({
       where,
-      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      orderBy: cursorOrderBy("createdAt"),
       take: limit + 1,
-      ...(input.cursor ? { cursor: { id: input.cursor }, skip: 1 } : undefined),
+      ...(cursorId ? { cursor: { id: cursorId }, skip: 1 } : undefined),
     });
-    const hasMore = proofs.length > limit;
-    const page = hasMore ? proofs.slice(0, limit) : proofs;
+
+    const { data, pageInfo } = buildPage(proofs, limit, "createdAt");
+
+    // Sign the next cursor token if there are more items
+    const nextCursor = pageInfo.hasMore
+      ? this.signedCursorService.sign({
+          cursorId: data[data.length - 1]?.id ?? "",
+          tenantId: userId,
+          filterId,
+        })
+      : null;
 
     return {
-      data: page.map((proof) => this.toHistoryItem(proof)),
+      data: data.map((proof) => this.toHistoryItem(proof)),
       pageInfo: {
-        hasMore,
-        nextCursor: hasMore ? (page.at(-1)?.id ?? null) : null,
+        hasMore: pageInfo.hasMore,
+        nextCursor,
       },
     };
   }
@@ -2886,6 +2928,60 @@ export class ProofsService {
         },
       },
     };
+  }
+
+  private async recordVerificationProvenance(
+    proofId: string,
+    proofStatus: ProofStatus,
+    verificationResult: VerificationResult,
+    credential: any,
+    contractStatus?: any,
+  ): Promise<void> {
+    if (!this.verificationProvenanceService) return;
+    try {
+      const builder = new ProvenanceDecisionBuilder();
+
+      builder
+        .recordCredentialSource(proofId, "PROOF_CLAIM")
+        .setPolicyVersion(VERIFICATION_PROVENANCE_SCHEMA_VERSION);
+
+      if (contractStatus?.checked) {
+        builder.recordContractObservation(
+          contractStatus.transactionHash || "unknown",
+          contractStatus.valid ?? false,
+          contractStatus.revoked ?? false,
+        );
+      }
+
+      let failureReason: string | undefined;
+      if (verificationResult === VerificationResult.EXPIRED) {
+        failureReason = "PROOF_EXPIRATION_DETECTED";
+      } else if (verificationResult === VerificationResult.REVOKED) {
+        failureReason = "PROOF_REVOCATION_DETECTED";
+      } else if (verificationResult === VerificationResult.INVALID_SIGNATURE) {
+        failureReason = "CREDENTIAL_MISMATCH";
+      } else if (verificationResult === VerificationResult.UNVERIFIED_ISSUER) {
+        failureReason = "ANCHORING_INCOMPLETE";
+      } else if (verificationResult === VerificationResult.UNKNOWN_PROOF) {
+        failureReason = "PROOF_NOT_FOUND";
+      }
+
+      const provenanceInput = builder.build(
+        proofId,
+        proofStatus,
+        verificationResult,
+        credential,
+        contractStatus,
+        failureReason,
+        undefined,
+      );
+
+      await this.verificationProvenanceService.recordProvenance(provenanceInput);
+    } catch (error) {
+      this.logger.debug(
+        `Failed to record verification provenance for proof ${proofId}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
 
   /**

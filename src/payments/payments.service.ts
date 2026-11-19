@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from "@nestjs/common";
+import { Injectable, NotFoundException, Optional } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import {
   Payment,
@@ -9,6 +9,11 @@ import {
 import { canonicalAssetId } from "../common/assets/asset-identifier";
 import { encryptProtectedAmount } from "../common/crypto/protected-amount";
 import { PaymentEncryptionKeyringService } from "../common/crypto/payment-encryption-keyring.service";
+import {
+  buildPage,
+  cursorOrderBy,
+  cursorWhereFragment,
+} from "../common/pagination/keyset-paginate";
 import { PrismaService } from "../database/prisma.service";
 import { OrganizationQuotaService } from "../quotas/organization-quota.service";
 import { StellarService } from "../stellar/stellar.service";
@@ -24,6 +29,7 @@ import { operationIndexFromToid } from "../stellar/operation-identity";
 import { PaymentEligibilityService } from "./payment-eligibility.service";
 import { PaymentClassificationHistoryService } from "./payment-classification-history.service";
 import { PaymentAddressCipher } from "../common/crypto/payment-address-cipher";
+import { PaymentAccountResolver } from "./payment-account.resolver";
 
 /**
  * A plan is re-read at most once per sync: when a forward read diverges, the
@@ -45,6 +51,7 @@ export class PaymentsService {
     private readonly finality: PaymentFinalityService,
     private readonly classificationHistoryService: PaymentClassificationHistoryService,
     private readonly eligibility: PaymentEligibilityService,
+    @Optional() private readonly accounts?: PaymentAccountResolver,
   ) {
     this.paymentEncryptionKeyring = new PaymentEncryptionKeyringService(
       configService,
@@ -63,6 +70,19 @@ export class PaymentsService {
    * docs/ledger-finality.md.
    */
   async syncPayments(user: { id: string; walletAddress: string }) {
+    // The indexed account is the active monitored account after a payment
+    // account rotation (#321), and the wallet otherwise — unchanged for users
+    // who never rotated, and for wiring without the resolver.
+    if (!this.accounts) return this.syncAccount(user);
+    const account = await this.accounts.current(user);
+    try {
+      return await this.syncAccount({ id: user.id, walletAddress: account.accountId });
+    } finally {
+      await this.accounts.discardStaleCheckpoint(user, account);
+    }
+  }
+
+  private async syncAccount(user: { id: string; walletAddress: string }) {
     let plan = await this.finality.plan(user.id);
     // Resolved here rather than in the constructor: the network stamps every
     // synced payment's canonical identity, but classification-only call paths
@@ -337,21 +357,32 @@ export class PaymentsService {
 
   async listPayments(
     userId: string,
-    filters: { classification?: PaymentClassification; assetCode?: string },
+    filters: {
+      classification?: PaymentClassification;
+      assetCode?: string;
+      cursor?: string;
+      limit?: number;
+    },
   ) {
+    const limit = filters.limit ?? 20;
+    const cursorWhere = cursorWhereFragment(filters.cursor, "occurredAt");
     const payments = await this.prisma.payment.findMany({
       where: {
         userId,
         classification: filters.classification,
         assetCode: filters.assetCode,
+        ...(cursorWhere as Prisma.PaymentWhereInput),
       },
-      orderBy: {
-        occurredAt: "desc",
-      },
-      take: 100,
+      orderBy: cursorOrderBy("occurredAt"),
+      take: limit + 1,
     });
 
-    return payments.map((payment) => this.toPaymentDto(payment));
+    const { data, pageInfo } = buildPage(payments, limit, "occurredAt");
+
+    return {
+      data: data.map((payment) => this.toPaymentDto(payment)),
+      pageInfo,
+    };
   }
 
   async getPayment(userId: string, paymentId: string) {

@@ -17,11 +17,13 @@ import { CredentialsModule } from "./credentials/credentials.module";
 import { DatabaseModule } from "./database/database.module";
 import { DisputesModule } from "./disputes/disputes.module";
 import { HealthModule } from "./health/health.module";
+import { IntegrationsModule } from "./integrations/integrations.module";
 import { HttpMetricsInterceptor } from "./common/interceptors/http-metrics.interceptor";
 import { IdempotentInterceptor } from "./common/interceptors/idempotent.interceptor";
 import { ObservabilityModule } from "./common/observability/observability.module";
 import { ResilienceModule } from "./common/resilience/resilience.module";
 import { JobsModule } from "./jobs/jobs.module";
+import { MetricsModule } from "./metrics/metrics.module";
 import { IssuersModule } from "./issuers/issuers.module";
 import { OrganizationsModule } from "./organizations/organizations.module";
 import { DataResidencyModule } from "./organizations/residency/data-residency.module";
@@ -37,6 +39,7 @@ import { SupportAccessModule } from "./support-access/support-access.module";
 import { ReconciliationModule } from "./reconciliation/reconciliation.module";
 import { DeploymentsModule } from "./deployments/deployments.module";
 import { NotificationsModule } from "./notifications/notifications.module";
+import { SecurityModule } from "./security/security.module";
 
 @Module({
   imports: [
@@ -60,6 +63,7 @@ import { NotificationsModule } from "./notifications/notifications.module";
     RateLimitModule,
     DisputesModule,
     HealthModule,
+    IntegrationsModule,
     OrganizationsModule,
     DataResidencyModule,
     IssuersModule,
@@ -70,6 +74,7 @@ import { NotificationsModule } from "./notifications/notifications.module";
     TrustedSourcesModule,
     UsersModule,
     JobsModule,
+    MetricsModule,
     WebhooksModule,
     SupportedAssetsModule,
     GovernanceModule,
@@ -77,6 +82,7 @@ import { NotificationsModule } from "./notifications/notifications.module";
     ReconciliationModule,
     DeploymentsModule,
     NotificationsModule,
+    SecurityModule,
   ],
   providers: [
     {
